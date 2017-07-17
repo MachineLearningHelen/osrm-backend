@@ -108,7 +108,7 @@ class EdgeBasedGraphFactory
     std::vector<util::guidance::BearingClass> GetBearingClasses() const;
     std::vector<util::guidance::EntryClass> GetEntryClasses() const;
 
-    unsigned GetHighestEdgeID();
+    std::uint64_t GetNumberOfEdgeBasedNodes() const;
 
     // Basic analysis of a turn (u --(e1)-- v --(e2)-- w)
     // with known angle.
@@ -136,7 +136,11 @@ class EdgeBasedGraphFactory
     std::vector<EdgeBasedNodeSegment> m_edge_based_node_segments;
     EdgeBasedNodeDataContainer m_edge_based_node_container;
     util::DeallocatingVector<EdgeBasedEdge> m_edge_based_edge_list;
-    EdgeID m_max_edge_id;
+
+    // the number of edge-based nodes is mostly made up out of the edges in the node-based graph.
+    // Any edge in the node-based graph represents a node in the edge-based graph. In addition, we
+    // add a set of artificial edge-based nodes into the mix to model via-way turn restrictions.
+    std::uint64_t m_number_of_edge_based_nodes;
 
     const std::vector<util::Coordinate> &m_coordinates;
     const extractor::PackedOSMIDs &m_osm_node_ids;

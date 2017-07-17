@@ -669,16 +669,16 @@ void ExtractionContainers::PrepareRestrictions()
         if (turn_restriction.Type() == RestrictionType::WAY_RESTRICTION)
         {
             const auto &way = turn_restriction.AsWayRestriction();
-            referenced_ways[OSMWayID{way.from}] = dummy_segment;
-            referenced_ways[OSMWayID{way.to}] = dummy_segment;
-            referenced_ways[OSMWayID{way.via}] = dummy_segment;
+            referenced_ways[way.from] = dummy_segment;
+            referenced_ways[way.to] = dummy_segment;
+            referenced_ways[way.via] = dummy_segment;
         }
         else
         {
             BOOST_ASSERT(turn_restriction.Type() == RestrictionType::NODE_RESTRICTION);
             const auto &node = turn_restriction.AsNodeRestriction();
-            referenced_ways[OSMWayID{node.from}] = dummy_segment;
-            referenced_ways[OSMWayID{node.to}] = dummy_segment;
+            referenced_ways[node.from] = dummy_segment;
+            referenced_ways[node.to] = dummy_segment;
         }
     };
 
@@ -764,15 +764,15 @@ void ExtractionContainers::PrepareRestrictions()
     // be connected at a single location)
     auto const get_node_restriction_from_OSM_ids = [&](
         auto const from_id, auto const to_id, const OSMNodeID via_node = MAX_OSM_NODEID) {
-        auto const from_segment_itr = referenced_ways.find(OSMWayID{from_id});
-        if (from_segment_itr->second.way_id != OSMWayID{from_id})
+        auto const from_segment_itr = referenced_ways.find(from_id);
+        if (from_segment_itr->second.way_id != from_id)
         {
             util::Log(logDEBUG) << "Restriction references invalid way: " << from_id;
             return NodeRestriction{SPECIAL_NODEID, SPECIAL_NODEID, SPECIAL_NODEID};
         }
 
-        auto const to_segment_itr = referenced_ways.find(OSMWayID{to_id});
-        if (to_segment_itr->second.way_id != OSMWayID{to_id})
+        auto const to_segment_itr = referenced_ways.find(to_id);
+        if (to_segment_itr->second.way_id != to_id)
         {
             util::Log(logDEBUG) << "Restriction references invalid way: " << to_id;
             return NodeRestriction{SPECIAL_NODEID, SPECIAL_NODEID, SPECIAL_NODEID};
@@ -836,7 +836,7 @@ void ExtractionContainers::PrepareRestrictions()
         if (external_restriction.condition.empty())
         {
             TurnRestriction restriction;
-            restriction.flags = external_restriction.flags;
+            restriction.is_only = external_restriction.is_only;
             if (transform(external_restriction, restriction))
                 unconditional_turn_restrictions.push_back(restriction);
         }
@@ -844,7 +844,7 @@ void ExtractionContainers::PrepareRestrictions()
         else
         {
             ConditionalTurnRestriction restriction;
-            restriction.flags = external_restriction.flags;
+            restriction.is_only = external_restriction.is_only;
             restriction.condition = std::move(external_restriction.condition);
             if (transform(external_restriction, restriction))
                 conditional_turn_restrictions.push_back(restriction);

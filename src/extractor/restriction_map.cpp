@@ -47,7 +47,7 @@ RestrictionMap::RestrictionMap(const std::vector<TurnRestriction> &restriction_l
             {
                 continue;
             }
-            else if (restriction.flags.is_only)
+            else if (restriction.is_only)
             {
                 // We are going to insert an is_only_*-restriction. There can be only one.
                 m_count -= m_restriction_bucket_list.at(index).size();
@@ -55,8 +55,7 @@ RestrictionMap::RestrictionMap(const std::vector<TurnRestriction> &restriction_l
             }
         }
         ++m_count;
-        m_restriction_bucket_list.at(index).emplace_back(node_restriction.to,
-                                                         restriction.flags.is_only);
+        m_restriction_bucket_list.at(index).emplace_back(node_restriction.to, restriction.is_only);
     }
 }
 

@@ -140,7 +140,7 @@ int Extractor::run(ScriptingEnvironment &scripting_environment)
                                              turn_lane_map);
 
     auto number_of_node_based_nodes = graph_size.first;
-    auto max_edge_id = graph_size.second;
+    auto max_edge_id = graph_size.second - 1;
 
     TIMER_STOP(expansion);
 
@@ -481,7 +481,7 @@ Extractor::BuildEdgeExpandedGraph(ScriptingEnvironment &scripting_environment,
                                                    name_table,
                                                    turn_lane_map);
 
-    auto const number_of_edge_based_nodes = [&]() {
+    const auto create_edge_based_edges = [&]() {
         // scoped to relase intermediate datastructures right after the call
         RestrictionMap via_node_restriction_map(turn_restrictions);
         WayRestrictionMap via_way_restriction_map(turn_restrictions);
@@ -497,9 +497,10 @@ Extractor::BuildEdgeExpandedGraph(ScriptingEnvironment &scripting_environment,
                                      config.cnbg_ebg_graph_mapping_output_path,
                                      via_node_restriction_map,
                                      via_way_restriction_map);
-        return edge_based_graph_factory.GetHighestEdgeID() +
-               via_way_restriction_map.NumberOfDuplicatedNodes();
-    }();
+        return edge_based_graph_factory.GetNumberOfEdgeBasedNodes();
+    };
+
+    const auto number_of_edge_based_nodes = create_edge_based_edges();
 
     compressed_edge_container.PrintStatistics();
 

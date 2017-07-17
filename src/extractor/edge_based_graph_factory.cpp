@@ -51,7 +51,7 @@ EdgeBasedGraphFactory::EdgeBasedGraphFactory(
     ProfileProperties profile_properties,
     const util::NameTable &name_table,
     guidance::LaneDescriptionMap &lane_description_map)
-    : m_max_edge_id(0), m_coordinates(coordinates), m_osm_node_ids(osm_node_ids),
+    : m_number_of_edge_based_nodes(0), m_coordinates(coordinates), m_osm_node_ids(osm_node_ids),
       m_node_based_graph(std::move(node_based_graph)), m_barrier_nodes(barrier_nodes),
       m_traffic_lights(traffic_lights), m_compressed_edge_container(compressed_edge_container),
       profile_properties(std::move(profile_properties)), name_table(name_table),
@@ -91,7 +91,10 @@ void EdgeBasedGraphFactory::GetEdgeBasedNodeWeights(std::vector<EdgeWeight> &out
     swap(m_edge_based_node_weights, output_node_weights);
 }
 
-EdgeID EdgeBasedGraphFactory::GetHighestEdgeID() { return m_max_edge_id; }
+std::uint64_t EdgeBasedGraphFactory::GetNumberOfEdgeBasedNodes() const
+{
+    return m_number_of_edge_based_nodes;
+}
 
 NBGToEBG EdgeBasedGraphFactory::InsertEdgeBasedNode(const NodeID node_u, const NodeID node_v)
 {
@@ -195,7 +198,7 @@ void EdgeBasedGraphFactory::Run(ScriptingEnvironment &scripting_environment,
                                 const WayRestrictionMap &way_restriction_map)
 {
     TIMER_START(renumber);
-    m_max_edge_id = RenumberEdges() - 1;
+    m_number_of_edge_based_nodes = RenumberEdges() + way_restriction_map.NumberOfDuplicatedNodes();
     TIMER_STOP(renumber);
 
     TIMER_START(generate_nodes);
@@ -267,8 +270,7 @@ EdgeBasedGraphFactory::GenerateEdgeExpandedNodes(const WayRestrictionMap &way_re
     // Allocate memory for edge-based nodes
     // In addition to the normal edges, allocate enough space for copied edges from
     // via-way-restrictions
-    m_edge_based_node_container = EdgeBasedNodeDataContainer(
-        m_max_edge_id + way_restriction_map.NumberOfDuplicatedNodes() + 1);
+    m_edge_based_node_container = EdgeBasedNodeDataContainer(m_number_of_edge_based_nodes);
 
     util::Log() << "Generating edge expanded nodes ... ";
     // indicating a normal node within the edge-based graph. This node represents an edge in the
@@ -319,6 +321,9 @@ EdgeBasedGraphFactory::GenerateEdgeExpandedNodes(const WayRestrictionMap &way_re
         util::UnbufferedLog log;
         const auto via_ways = way_restriction_map.DuplicatedNodeRepresentatives();
         util::Percent progress(log, via_ways.size());
+
+        NodeID edge_based_node_id =
+            NodeID(m_number_of_edge_based_nodes - way_restriction_map.NumberOfDuplicatedNodes());
         std::size_t progress_counter = 0;
         // allocate enough space for the mapping
         for (const auto way : via_ways)
@@ -327,13 +332,6 @@ EdgeBasedGraphFactory::GenerateEdgeExpandedNodes(const WayRestrictionMap &way_re
             const auto node_v = way.to;
 
             auto const eid = m_node_based_graph->FindEdge(node_u, node_v);
-            auto const revererse_id = m_node_based_graph->FindEdge(node_v, node_u);
-            std::cout << "Search: " << node_u << " " << node_v << " " << eid << " " << revererse_id
-                      << std::endl;
-            const NodeID edge_based_node_id = m_max_edge_id + 1 + progress_counter;
-            std::cout << "Restriction: " << node_u << " " << node_v << " -- " << eid << " "
-                      << m_node_based_graph->GetEdgeData(eid).edge_id
-                      << " EBN: " << edge_based_node_id << std::endl;
 
             BOOST_ASSERT(m_node_based_graph->GetEdgeData(eid).edge_id != SPECIAL_NODEID);
 
@@ -348,8 +346,6 @@ EdgeBasedGraphFactory::GenerateEdgeExpandedNodes(const WayRestrictionMap &way_re
 
             // Add edge-based node data for forward and reverse nodes indexed by edge_id
             BOOST_ASSERT(forward_data.edge_id != SPECIAL_EDGEID);
-            std::cout << "Adding edge based node: " << node_u << " " << node_v << " - "
-                      << forward_data.edge_id << std::endl;
 
             BOOST_ASSERT(forward_data.edge_id < m_edge_based_node_container.Size());
             m_edge_based_node_container.SetData(edge_based_node_id,
@@ -362,18 +358,16 @@ EdgeBasedGraphFactory::GenerateEdgeExpandedNodes(const WayRestrictionMap &way_re
 
             m_edge_based_node_weights.push_back(m_edge_based_node_weights[eid]);
 
+            edge_based_node_id++;
             progress.PrintStatus(progress_counter++);
         }
     }
 
     BOOST_ASSERT(m_edge_based_node_segments.size() == m_edge_based_node_is_startpoint.size());
-    BOOST_ASSERT(m_max_edge_id + 1 + way_restriction_map.NumberOfDuplicatedNodes() ==
-                 m_edge_based_node_weights.size());
+    BOOST_ASSERT(m_number_of_edge_based_nodes == m_edge_based_node_weights.size());
 
-    util::Log() << "Generated "
-                << (m_max_edge_id + 1 + way_restriction_map.NumberOfDuplicatedNodes())
-                << " nodes and " << m_edge_based_node_segments.size()
-                << " segments in edge-expanded graph";
+    util::Log() << "Generated " << m_number_of_edge_based_nodes << " nodes and "
+                << m_edge_based_node_segments.size() << " segments in edge-expanded graph";
 
     return mapping;
 }
@@ -501,6 +495,114 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
             std::vector<EdgeWithData> delayed_data;
         };
 
+        // add into delayed data
+        const auto delayed_inserter = [](const auto &edge_with_data, auto &buffer) {
+            buffer.delayed_data.push_back(edge_with_data);
+        };
+
+        // add into main data
+        const auto continuous_inserter = [](const auto &edge_with_data, auto &buffer) {
+            buffer.continuous_data.edges_list.push_back(edge_with_data.edge);
+            buffer.continuous_data.turn_indexes.push_back(edge_with_data.turn_index);
+            buffer.continuous_data.turn_weight_penalties.push_back(
+                edge_with_data.turn_weight_penalty);
+            buffer.continuous_data.turn_duration_penalties.push_back(
+                edge_with_data.turn_duration_penalty);
+            buffer.continuous_data.turn_data_container.push_back(edge_with_data.turn_data);
+        };
+
+        // Generate edges for either artificial nodes or the main graph
+        const auto generate_edges = [this, &scripting_environment, weight_multiplier](
+            // what nodes will be used? In most cases this will be the id stored in the edge_data.
+            // In case of duplicated nodes (e.g. due to via-way restrictions), one/both of these
+            // might refer to a newly added edge based node
+            const auto edge_based_node_from,
+            const auto edge_based_node_to,
+            // the situation of the turn
+            const auto node_along_road_entering,
+            const auto node_based_edge_from,
+            const auto node_at_center_of_intersection,
+            const auto node_based_edge_to,
+            const auto &intersection,
+            const auto &turn,
+            const auto entry_class_id,
+            // we require a sorted output, additional nodes are collected and added after the
+            // sorting is done Here we can specify how/where to add the data
+            auto inserter,
+            auto &output_buffer) {
+            const EdgeData &edge_data1 = m_node_based_graph->GetEdgeData(node_based_edge_from);
+            const EdgeData &edge_data2 = m_node_based_graph->GetEdgeData(node_based_edge_to);
+
+            BOOST_ASSERT(edge_data1.edge_id != edge_data2.edge_id);
+            BOOST_ASSERT(!edge_data1.reversed);
+            BOOST_ASSERT(!edge_data2.reversed);
+
+            // the following is the core of the loop.
+            TurnData turn_data = {turn.instruction,
+                                  turn.lane_data_id,
+                                  entry_class_id,
+                                  util::guidance::TurnBearing(intersection[0].bearing),
+                                  util::guidance::TurnBearing(turn.bearing)};
+
+            // compute weight and duration penalties
+            auto is_traffic_light = m_traffic_lights.count(node_at_center_of_intersection);
+            ExtractionTurn extracted_turn(turn, is_traffic_light);
+            extracted_turn.source_restricted = edge_data1.restricted;
+            extracted_turn.target_restricted = edge_data2.restricted;
+            scripting_environment.ProcessTurn(extracted_turn);
+
+            // turn penalties are limited to [-2^15, 2^15) which roughly
+            // translates to 54 minutes and fits signed 16bit deci-seconds
+            auto weight_penalty =
+                boost::numeric_cast<TurnPenalty>(extracted_turn.weight * weight_multiplier);
+            auto duration_penalty = boost::numeric_cast<TurnPenalty>(extracted_turn.duration * 10.);
+
+            BOOST_ASSERT(SPECIAL_NODEID != edge_data1.edge_id);
+            BOOST_ASSERT(SPECIAL_NODEID != edge_data2.edge_id);
+
+            // auto turn_id = m_edge_based_edge_list.size();
+            auto weight = boost::numeric_cast<EdgeWeight>(edge_data1.weight + weight_penalty);
+            auto duration = boost::numeric_cast<EdgeWeight>(edge_data1.duration + duration_penalty);
+
+            EdgeBasedEdge edge_based_edge = {
+                edge_based_node_from,
+                edge_based_node_to,
+                SPECIAL_NODEID, // This will be updated once the main loop
+                                // completes!
+                weight,
+                duration,
+                true,
+                false};
+
+            // We write out the mapping between the edge-expanded edges and
+            // the original nodes. Since each edge represents a possible
+            // maneuver, external programs can use this to quickly perform updates to edge
+            // weights in order to penalize certain turns.
+
+            // If this edge is 'trivial' -- where the compressed edge
+            // corresponds exactly to an original OSM segment -- we can pull the turn's
+            // preceding node ID directly with `node_along_road_entering`;
+            // otherwise, we need to look up the node immediately preceding the turn
+            // from the compressed edge container.
+            const bool isTrivial = m_compressed_edge_container.IsTrivial(node_based_edge_from);
+
+            const auto &from_node =
+                isTrivial ? node_along_road_entering
+                          : m_compressed_edge_container.GetLastEdgeSourceID(node_based_edge_from);
+            const auto &via_node =
+                m_compressed_edge_container.GetLastEdgeTargetID(node_based_edge_from);
+            const auto &to_node = m_compressed_edge_container.GetFirstEdgeTargetID(turn.eid);
+
+            lookup::TurnIndexBlock turn_index_block = {from_node, via_node, to_node};
+
+            // insert data into the designated buffer
+            inserter(
+                EdgeWithData{
+                    edge_based_edge, turn_index_block, weight_penalty, duration_penalty, turn_data},
+                output_buffer);
+
+        };
+
         // Second part of the pipeline is where the intersection analysis is done for
         // each intersection
         tbb::filter_t<tbb::blocked_range<NodeID>, std::shared_ptr<PipelineBuffer>> processor_stage(
@@ -596,181 +698,9 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
                         bearing_class_by_node_based_node[node_at_center_of_intersection] =
                             bearing_class_id;
 
-                        if (way_restriction_map.IsEnd(node_along_road_entering,
-                                                      node_at_center_of_intersection))
-                        {
-                            auto restriction_ids = way_restriction_map.GetIDs(
-                                node_along_road_entering, node_at_center_of_intersection);
-
-                            // loop over all duplicated nodes groups
-                            auto itr = restriction_ids.begin();
-                            while (itr != restriction_ids.end())
-                            {
-                                auto const from_id =
-                                    m_max_edge_id + 1 + way_restriction_map.DuplicatedNodeID(*itr);
-                                const auto by_duplicated_id = [&](const auto duplicated_node,
-                                                                  const auto restriction_id) {
-                                    return duplicated_node <
-                                           way_restriction_map.DuplicatedNodeID(restriction_id);
-                                };
-                                auto range =
-                                    std::equal_range(restriction_ids.begin(),
-                                                     restriction_ids.end(),
-                                                     way_restriction_map.DuplicatedNodeID(*itr),
-                                                     by_duplicated_id);
-
-                                std::cout << "IDs:";
-                                for (auto r : restriction_ids)
-                                    std::cout << " " << way_restriction_map.DuplicatedNodeID(r);
-                                std::cout << std::endl;
-
-                                std::cout << "Processing from: "
-                                          << std::distance(restriction_ids.begin(), range.first)
-                                          << " to "
-                                          << std::distance(restriction_ids.begin(), range.second)
-                                          << std::endl;
-
-                                bool is_only = false;
-                                std::set<NodeID> restricted_nodes;
-                                for (auto id_itr = range.first; id_itr != range.second; ++id_itr)
-                                {
-                                    auto const &restriction =
-                                        way_restriction_map.GetRestriction(*id_itr);
-                                    auto const &way_restriction = restriction.AsWayRestriction();
-
-                                    // only handle `only` restrictions if they are actually the only
-                                    // restriction present
-                                    if (restriction.flags.is_only)
-                                    {
-                                        if (std::distance(range.first, range.second) > 1)
-                                        {
-                                            util::Log() << "Only restriction in present of other "
-                                                           "restrictions";
-                                            continue;
-                                        }
-                                        is_only = true;
-                                    }
-                                    restricted_nodes.insert(way_restriction.out_restriction.to);
-                                }
-
-                                for (const auto &turn : intersection)
-                                {
-                                    // only keep valid turns
-                                    if (!turn.entry_allowed)
-                                        continue;
-
-                                    auto const node_at_end_of_turn =
-                                        m_node_based_graph->GetTarget(turn.eid);
-
-                                    const auto is_restricted = [&]() {
-                                        return is_only
-                                                   ? (restricted_nodes.count(node_at_end_of_turn) ==
-                                                      0)
-                                                   : (restricted_nodes.count(node_at_end_of_turn) !=
-                                                      0);
-                                    };
-
-                                    if (is_restricted())
-                                        continue;
-
-                                    const EdgeData &edge_data1 =
-                                        m_node_based_graph->GetEdgeData(incoming_edge);
-                                    const EdgeData &edge_data2 =
-                                        m_node_based_graph->GetEdgeData(turn.eid);
-
-                                    BOOST_ASSERT(edge_data1.edge_id != edge_data2.edge_id);
-                                    BOOST_ASSERT(!edge_data1.reversed);
-                                    BOOST_ASSERT(!edge_data2.reversed);
-
-                                    // the following is the core of the loop.
-                                    TurnData turn_data = {
-                                        turn.instruction,
-                                        turn.lane_data_id,
-                                        entry_class_id,
-                                        util::guidance::TurnBearing(intersection[0].bearing),
-                                        util::guidance::TurnBearing(turn.bearing)};
-
-                                    // compute weight and duration penalties
-                                    auto is_traffic_light =
-                                        m_traffic_lights.count(node_at_center_of_intersection);
-                                    ExtractionTurn extracted_turn(turn, is_traffic_light);
-                                    extracted_turn.source_restricted = edge_data1.restricted;
-                                    extracted_turn.target_restricted = edge_data2.restricted;
-                                    scripting_environment.ProcessTurn(extracted_turn);
-
-                                    // turn penalties are limited to [-2^15, 2^15) which roughly
-                                    // translates to 54 minutes and fits signed 16bit deci-seconds
-                                    auto weight_penalty = boost::numeric_cast<TurnPenalty>(
-                                        extracted_turn.weight * weight_multiplier);
-                                    auto duration_penalty = boost::numeric_cast<TurnPenalty>(
-                                        extracted_turn.duration * 10.);
-
-                                    BOOST_ASSERT(SPECIAL_NODEID != edge_data1.edge_id);
-                                    BOOST_ASSERT(SPECIAL_NODEID != edge_data2.edge_id);
-
-                                    // auto turn_id = m_edge_based_edge_list.size();
-                                    auto weight = boost::numeric_cast<EdgeWeight>(
-                                        edge_data1.weight + weight_penalty);
-                                    auto duration = boost::numeric_cast<EdgeWeight>(
-                                        edge_data1.duration + duration_penalty);
-
-                                    std::cout
-                                        << "Restriction turning off a restricted way: instead of "
-                                        << edge_data1.edge_id << " use " << from_id << " ->  "
-                                        << edge_data2.edge_id << std::endl;
-
-                                    EdgeBasedEdge edge_based_edge = {
-                                        NodeID(from_id),
-                                        edge_data2.edge_id,
-                                        SPECIAL_NODEID, // This will be updated once the main loop
-                                                        // completes!
-                                        weight,
-                                        duration,
-                                        true,
-                                        false};
-
-                                    // We write out the mapping between the edge-expanded edges and
-                                    // the
-                                    // original nodes. Since each edge represents a possible
-                                    // maneuver,
-                                    // external programs can use this to quickly perform updates to
-                                    // edge
-                                    // weights in order to penalize certain turns.
-
-                                    // If this edge is 'trivial' -- where the compressed edge
-                                    // corresponds
-                                    // exactly to an original OSM segment -- we can pull the turn's
-                                    // preceding node ID directly with `node_along_road_entering`;
-                                    // otherwise, we need to look up the node immediately preceding
-                                    // the
-                                    // turn
-                                    // from the compressed edge container.
-                                    const bool isTrivial =
-                                        m_compressed_edge_container.IsTrivial(incoming_edge);
-
-                                    const auto &from_node =
-                                        isTrivial ? node_along_road_entering
-                                                  : m_compressed_edge_container.GetLastEdgeSourceID(
-                                                        incoming_edge);
-                                    const auto &via_node =
-                                        m_compressed_edge_container.GetLastEdgeTargetID(
-                                            incoming_edge);
-                                    const auto &to_node =
-                                        m_compressed_edge_container.GetFirstEdgeTargetID(turn.eid);
-
-                                    lookup::TurnIndexBlock turn_index_block = {
-                                        from_node, via_node, to_node};
-
-                                    buffer->delayed_data.push_back({edge_based_edge,
-                                                                    turn_index_block,
-                                                                    weight_penalty,
-                                                                    duration_penalty,
-                                                                    turn_data});
-                                }
-                                // advance towards the next range of duplicated nodes
-                                itr = range.second;
-                            }
-                        }
+                        // check if we are turning off a via way
+                        const auto turning_off_via_way = way_restriction_map.IsViaWay(
+                            node_along_road_entering, node_at_center_of_intersection);
 
                         for (const auto &turn : intersection)
                         {
@@ -782,117 +712,91 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
                                 m_node_based_graph->GetEdgeData(incoming_edge);
                             const EdgeData &edge_data2 = m_node_based_graph->GetEdgeData(turn.eid);
 
-                            BOOST_ASSERT(edge_data1.edge_id != edge_data2.edge_id);
-                            BOOST_ASSERT(!edge_data1.reversed);
-                            BOOST_ASSERT(!edge_data2.reversed);
+                            // In case a way restriction starts at a given location, add a turn onto
+                            // every artificial node eminating here.
+                            //
+                            //     e - f
+                            //     |
+                            // a - b
+                            //     |
+                            //     c - d
+                            //
+                            // ab via bc to cd
+                            // ab via be to ef
+                            //
+                            // has two artifical nodes (be/bc) with restrictions starting at `ab`.
+                            // Since every restriction group (abc | abe) refers to the same
+                            // artificial node, we simply have to find a single representative for
+                            // the turn. Here we check whether the turn in question is the start of
+                            // a via way restriction. If that should be the case, we switch
+                            // edge_data2.edge_id to the ID of the duplicated node associated with
+                            // the turn. (e.g. ab via bc switches bc to bc_dup)
+                            auto const target_id = way_restriction_map.RemapIfRestricted(
+                                edge_data2.edge_id,
+                                node_along_road_entering,
+                                node_at_center_of_intersection,
+                                m_node_based_graph->GetTarget(turn.eid),
+                                m_number_of_edge_based_nodes);
 
-                            // the following is the core of the loop.
-                            buffer->continuous_data.turn_data_container.push_back(
-                                {turn.instruction,
-                                 turn.lane_data_id,
-                                 entry_class_id,
-                                 util::guidance::TurnBearing(intersection[0].bearing),
-                                 util::guidance::TurnBearing(turn.bearing)});
+                            generate_edges(edge_data1.edge_id,
+                                           target_id,
+                                           node_along_road_entering,
+                                           incoming_edge,
+                                           node_at_center_of_intersection,
+                                           turn.eid,
+                                           intersection,
+                                           turn,
+                                           entry_class_id,
+                                           continuous_inserter,
+                                           *buffer);
 
-                            // compute weight and duration penalties
-                            auto is_traffic_light =
-                                m_traffic_lights.count(node_at_center_of_intersection);
-                            ExtractionTurn extracted_turn(turn, is_traffic_light);
-                            extracted_turn.source_restricted = edge_data1.restricted;
-                            extracted_turn.target_restricted = edge_data2.restricted;
-                            scripting_environment.ProcessTurn(extracted_turn);
-
-                            // turn penalties are limited to [-2^15, 2^15) which roughly
-                            // translates to 54 minutes and fits signed 16bit deci-seconds
-                            auto weight_penalty = boost::numeric_cast<TurnPenalty>(
-                                extracted_turn.weight * weight_multiplier);
-                            auto duration_penalty =
-                                boost::numeric_cast<TurnPenalty>(extracted_turn.duration * 10.);
-
-                            BOOST_ASSERT(SPECIAL_NODEID != edge_data1.edge_id);
-                            BOOST_ASSERT(SPECIAL_NODEID != edge_data2.edge_id);
-
-                            // auto turn_id = m_edge_based_edge_list.size();
-                            auto weight =
-                                boost::numeric_cast<EdgeWeight>(edge_data1.weight + weight_penalty);
-                            auto duration = boost::numeric_cast<EdgeWeight>(edge_data1.duration +
-                                                                            duration_penalty);
-
-                            auto target_id = edge_data2.edge_id;
-                            if (way_restriction_map.IsStart(
-                                    node_at_center_of_intersection,
-                                    m_node_based_graph->GetTarget(turn.eid)))
+                            // when turning off a a via-way turn restriction, we need to not only
+                            // handle the normal edges for the way, but also add turns for every
+                            // duplicated node. This process is integrated here to avoid doing the
+                            // turn analysis multiple times.
+                            if (turning_off_via_way)
                             {
-                                const auto restriction_ids = way_restriction_map.GetIDs(
-                                    node_at_center_of_intersection,
-                                    m_node_based_graph->GetTarget(turn.eid));
-                                for (auto restriction_id : restriction_ids)
-                                {
-                                    const auto &restriction =
-                                        way_restriction_map.GetRestriction(restriction_id)
-                                            .AsWayRestriction();
+                                const auto duplicated_nodes = way_restriction_map.DuplicatedNodeIDs(
+                                    node_along_road_entering, node_at_center_of_intersection);
 
-                                    // target the artificial node
-                                    if (restriction.in_restriction.from == node_along_road_entering)
-                                    {
-                                        target_id =
-                                            m_max_edge_id + 1 +
-                                            way_restriction_map.DuplicatedNodeID(restriction_id);
-                                        std::cout << "Turning onto a restricted way at "
-                                                  << node_at_center_of_intersection
-                                                  << " coming from " << node_along_road_entering
-                                                  << " restriction_id: " << restriction_id
-                                                  << " EBN: " << target_id << std::endl;
+                                // next to the normal restrictions tracked in `entry_allowed`, via
+                                // ways might introduce additional restrictions. These are handled
+                                // here when turning off a via-way
+                                const auto add_unrestricted_turns =
+                                    [&](const auto duplicated_node_id) {
+                                        const auto from_id =
+                                            m_number_of_edge_based_nodes -
+                                            way_restriction_map.NumberOfDuplicatedNodes() +
+                                            duplicated_node_id;
 
-                                        std::cout << "Restriction turning onto: "
-                                                  << " " << target_id << " instead of "
-                                                  << edge_data2.edge_id << std::endl;
-                                    }
-                                }
+                                        auto const node_at_end_of_turn =
+                                            m_node_based_graph->GetTarget(turn.eid);
+
+                                        const auto is_restricted = way_restriction_map.IsRestricted(
+                                            duplicated_node_id, node_at_end_of_turn);
+
+                                        if (is_restricted)
+                                            return;
+
+                                        generate_edges(
+                                            NodeID(from_id),
+                                            m_node_based_graph->GetEdgeData(turn.eid).edge_id,
+                                            node_along_road_entering,
+                                            incoming_edge,
+                                            node_at_center_of_intersection,
+                                            turn.eid,
+                                            intersection,
+                                            turn,
+                                            entry_class_id,
+                                            delayed_inserter,
+                                            *buffer);
+
+                                    };
+
+                                std::for_each(duplicated_nodes.begin(),
+                                              duplicated_nodes.end(),
+                                              add_unrestricted_turns);
                             }
-
-                            buffer->continuous_data.edges_list.emplace_back(
-                                edge_data1.edge_id,
-                                target_id,
-                                SPECIAL_NODEID, // This will be updated once the main loop
-                                                // completes!
-                                weight,
-                                duration,
-                                true,
-                                false);
-
-                            BOOST_ASSERT(buffer->continuous_data.turn_weight_penalties.size() ==
-                                         buffer->continuous_data.edges_list.size() - 1);
-                            buffer->continuous_data.turn_weight_penalties.push_back(weight_penalty);
-                            BOOST_ASSERT(buffer->continuous_data.turn_duration_penalties.size() ==
-                                         buffer->continuous_data.edges_list.size() - 1);
-                            buffer->continuous_data.turn_duration_penalties.push_back(
-                                duration_penalty);
-
-                            // We write out the mapping between the edge-expanded edges and the
-                            // original nodes. Since each edge represents a possible maneuver,
-                            // external programs can use this to quickly perform updates to edge
-                            // weights in order to penalize certain turns.
-
-                            // If this edge is 'trivial' -- where the compressed edge corresponds
-                            // exactly to an original OSM segment -- we can pull the turn's
-                            // preceding node ID directly with `node_along_road_entering`;
-                            // otherwise, we need to look up the node immediately preceding the turn
-                            // from the compressed edge container.
-                            const bool isTrivial =
-                                m_compressed_edge_container.IsTrivial(incoming_edge);
-
-                            const auto &from_node =
-                                isTrivial ? node_along_road_entering
-                                          : m_compressed_edge_container.GetLastEdgeSourceID(
-                                                incoming_edge);
-                            const auto &via_node =
-                                m_compressed_edge_container.GetLastEdgeTargetID(incoming_edge);
-                            const auto &to_node =
-                                m_compressed_edge_container.GetFirstEdgeTargetID(turn.eid);
-
-                            buffer->continuous_data.turn_indexes.push_back(
-                                {from_node, via_node, to_node});
                         }
                     }
                 }
