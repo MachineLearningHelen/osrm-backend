@@ -703,7 +703,7 @@ void ExtractionContainers::PrepareRestrictions()
 
     auto const to_internal = [&](auto const osm_node) {
         auto internal = mapExternalToInternalNodeID(
-            used_node_id_list.begin(), used_node_id_list.end(), OSMNodeID{osm_node});
+            used_node_id_list.begin(), used_node_id_list.end(), osm_node);
         if (internal == SPECIAL_NODEID)
         {
             util::Log(logDEBUG) << "Restriction references invalid node: " << osm_node;
@@ -782,7 +782,7 @@ void ExtractionContainers::PrepareRestrictions()
 
     // transform an OSMRestriction (based on WayIDs) into an OSRM restriction (base on NodeIDs)
     // returns true on successful transformation, false in case of invalid references
-    const auto transform = [&](auto const &external_type, auto &internal_type) {
+    const auto transform = [&](const auto &external_type, auto &internal_type) {
         if (external_type.Type() == RestrictionType::WAY_RESTRICTION)
         {
             auto const &external = external_type.AsWayRestriction();
@@ -810,11 +810,10 @@ void ExtractionContainers::PrepareRestrictions()
 
             // check if we were able to resolve all the involved ways
             auto restriction = get_node_restriction_from_OSM_ids(
-                external.from, external.to, OSMNodeID{external.via});
+                external.from, external.to, external.via);
 
             if (!restriction.Valid())
             {
-                std::cout << " >>> Invalid" << std::endl;
                 return false;
             }
 
@@ -831,7 +830,7 @@ void ExtractionContainers::PrepareRestrictions()
 
     // wrapper function to handle distinction between conditional and unconditional turn
     // restrictions
-    const auto transform_into_internal_types = [&](auto &external_restriction) {
+    const auto transform_into_internal_types = [&](const InputConditionalTurnRestriction &external_restriction) {
         // unconditional restriction
         if (external_restriction.condition.empty())
         {
