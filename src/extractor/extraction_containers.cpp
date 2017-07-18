@@ -809,8 +809,8 @@ void ExtractionContainers::PrepareRestrictions()
             auto const via_node = to_internal(external.via);
 
             // check if we were able to resolve all the involved ways
-            auto restriction = get_node_restriction_from_OSM_ids(
-                external.from, external.to, external.via);
+            auto restriction =
+                get_node_restriction_from_OSM_ids(external.from, external.to, external.via);
 
             if (!restriction.Valid())
             {
@@ -830,25 +830,26 @@ void ExtractionContainers::PrepareRestrictions()
 
     // wrapper function to handle distinction between conditional and unconditional turn
     // restrictions
-    const auto transform_into_internal_types = [&](const InputConditionalTurnRestriction &external_restriction) {
-        // unconditional restriction
-        if (external_restriction.condition.empty())
-        {
-            TurnRestriction restriction;
-            restriction.is_only = external_restriction.is_only;
-            if (transform(external_restriction, restriction))
-                unconditional_turn_restrictions.push_back(restriction);
-        }
-        // conditional turn restriction
-        else
-        {
-            ConditionalTurnRestriction restriction;
-            restriction.is_only = external_restriction.is_only;
-            restriction.condition = std::move(external_restriction.condition);
-            if (transform(external_restriction, restriction))
-                conditional_turn_restrictions.push_back(restriction);
-        }
-    };
+    const auto transform_into_internal_types =
+        [&](const InputConditionalTurnRestriction &external_restriction) {
+            // unconditional restriction
+            if (external_restriction.condition.empty())
+            {
+                TurnRestriction restriction;
+                restriction.is_only = external_restriction.is_only;
+                if (transform(external_restriction, restriction))
+                    unconditional_turn_restrictions.push_back(restriction);
+            }
+            // conditional turn restriction
+            else
+            {
+                ConditionalTurnRestriction restriction;
+                restriction.is_only = external_restriction.is_only;
+                restriction.condition = std::move(external_restriction.condition);
+                if (transform(external_restriction, restriction))
+                    conditional_turn_restrictions.push_back(restriction);
+            }
+        };
 
     // Transforming the restrictions into the dedicated internal types
     {
